@@ -1,3 +1,4 @@
+require 'measures/loader.rb'
 module Api
   class MeasuresController < ApplicationController
     resource_description do
@@ -29,7 +30,25 @@ module Api
     api :POST, "/measures", "Load a measure into popHealth"
     description "The uploaded measure must be in the popHealth JSON measure format. This will not accept HQMF definitions of measures."
     def create
-       authorize! :create, HealthDataStandards::CQM::Measure
+      authorize! :create, HealthDataStandards::CQM::Measure
+      measure_details = {
+        'type'=>params[:measure_type],
+        'episode_of_care'=>params[:calculation_type] == 'episode',
+        'category'=> params[:category].empty? ?  "miscellaneous" : params[:category]
+      }
+      ret_value = {}
+      hqmf_document = Measures::Loader.parse_model(params[:measure_file].tempfile.path)
+      if measure_details["episode_of_care"]
+        Measures::Loader.save_for_finalization(hqmf_document)
+        ret_value= {episode_ids: hqmf_document.specific_occurrence_source_data_criteria().collect{|dc| {id: dc.id, description: dc.description}}, 
+                    hqmf_id: hqmf_document.hqmf_id,
+                    vsac_username: params[:vsac_username],
+                    vsac_password: params[:vsac_password],
+                    category: measure_details["category"]}
+      else
+        Measures::Loader.generate_measures(hqmf_document,params[:vsac_username],params[:vsac_password],measure_details)
+      end
+      render json: ret_value
     end
 
     api :DELETE, '/measures/:id', "Remove a clinical quality measure from popHealth"
@@ -43,6 +62,18 @@ module Api
       HealthDataStandards::CQM::QueryCache.where({"measure_id" => params[:id]}).destroy
       measure.destroy
       render :status=>204, :text=>""
+    end
+
+
+    def finalize
+      measure_details = {
+          'episode_ids'=>params[:episode_ids],
+          'category' => params[:category]
+       }
+      Measures::Loader.finalize_measure(params[:hqmf_id],params[:vsac_username],params[:vsac_password],measure_details) 
+      measure = HealthDataStandards::CQM::Measure.where({hqmf_id: params[:hqmf_id]}).first  
+      render json: measure, serializer: HealthDataStandards::CQM::MeasureSerializer
+
     end
 
   private
